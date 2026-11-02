@@ -53,6 +53,7 @@ final class SeparateShadeSwipeHooks {
     private State state;
     private Candidate candidate;
     private SecondPullCandidate secondPullCandidate;
+    private RegionPull regionPull;
     private final WeakHashMap<Object, RegionDecision> regionDecisions = new WeakHashMap<>();
     private boolean drainTouch;
     private BiConsumer<Object, Boolean> contentPose = (owner, visible) -> {};
@@ -227,13 +228,21 @@ final class SeparateShadeSwipeHooks {
     }
 
     private boolean eligible(Object panel) throws ReflectiveOperationException {
+        return enabled.getAsBoolean() && regionEligible(panel);
+    }
+
+    private boolean regionEligible(Object panel) throws ReflectiveOperationException {
         Object center = panelCenter.get(panel);
-        return enabled.getAsBoolean() && barState.getInt(panel) == 0
+        return barState.getInt(panel) == 0
                 && !Boolean.TRUE.equals(isKeyguardShowing.invoke(panel))
                 && !Boolean.TRUE.equals(flowValue.invoke(combined.invoke(shadeInteractor.get(panel))))
                 && !disabled.getBoolean(center)
                 && !Boolean.TRUE.equals(flowValue.invoke(editing.getType().getMethod("isEditing").invoke(editing.get(center))))
                 && !Boolean.TRUE.equals(isDeviceCenterShowing.invoke(deviceCenter.get(center)));
+    }
+
+    private boolean stateEligible(State current) throws ReflectiveOperationException {
+        return current.fromClosed ? regionEligible(current.panel) : eligible(current.panel);
     }
 
     private Object panelFor(View root) throws IllegalAccessException {
@@ -246,14 +255,14 @@ final class SeparateShadeSwipeHooks {
 
     private boolean handle(View root, MotionEvent event) throws ReflectiveOperationException {
         int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) drainTouch = false;
+        if (action == MotionEvent.ACTION_DOWN) { drainTouch = false; regionPull = null; }
         if (state == null && drainTouch) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) drainTouch = false;
             return true;
         }
         if (state != null) {
             State current = state;
-            if (!eligible(current.panel)) { finishSafely(current, current.sourceCenter); return true; }
+            if (!stateEligible(current)) { finishSafely(current, current.sourceCenter); return true; }
             if (action == MotionEvent.ACTION_DOWN) {
                 if (current.animator != null) { current.animator.cancel(); current.animator = null; }
                 current.downX = event.getRawX(); current.downY = event.getRawY(); current.base = current.position;
@@ -282,6 +291,53 @@ final class SeparateShadeSwipeHooks {
                 }
             }
             return true;
+        }
+        if (action == MotionEvent.ACTION_DOWN && pullRegionEnabled.getAsBoolean()) {
+            Object panel = panelFor(root);
+            if (panel != null && regionEligible(panel)) {
+                Object center = panelCenter.get(panel);
+                if (panelFraction.getFloat(panel) <= .001f && centerFraction.getFloat(center) <= .001f
+                        && event.getRawY() <= root.getHeight() * .18f) {
+                    View view = (View) panelView.get(panel);
+                    int width = view.getWidth();
+                    float start = Math.max(0, Math.min(100, pullRegionStart.getAsInt())) / 100f;
+                    if (width > 0 && event.getRawX() >= width * start) {
+                        regionPull = new RegionPull(root, panel, center, event.getRawX(), event.getRawY());
+                    }
+                }
+            }
+        }
+        if (regionPull != null) {
+            RegionPull pending = regionPull;
+            if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP
+                    || action == MotionEvent.ACTION_CANCEL) {
+                regionPull = null;
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                ViewConfiguration configuration = ViewConfiguration.get(root.getContext());
+                float dx = event.getRawX() - pending.x, dy = event.getRawY() - pending.y;
+                float slop = configuration.getScaledTouchSlop();
+                if (panelFraction.getFloat(pending.panel) > .001f) {
+                    regionPull = null;
+                } else if (dy < -slop || (Math.abs(dx) > slop && Math.abs(dx) >= Math.abs(dy) * 1.3f)) {
+                    regionPull = null;
+                } else if (dy > slop && dy >= Math.abs(dx) * 1.3f) {
+                    regionPull = null;
+                    State current = new State(pending.root, pending.panel, pending.center, configuration, true);
+                    current.downX = pending.x; current.downY = pending.y;
+                    state = current;
+                    drainTouch = true;
+                    MotionEvent cancel = MotionEvent.obtain(event); cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    bypass.set(true);
+                    try { root.dispatchTouchEvent(cancel); }
+                    finally { bypass.remove(); cancel.recycle(); }
+                    prepare(current);
+                    current.position = SeparateShadeSwipeMotion.resistVertical(
+                            event.getRawY() - pending.y, current.height);
+                    current.velocity.addMovement(event);
+                    render(current);
+                    return true;
+                }
+            }
         }
         if (action == MotionEvent.ACTION_DOWN) {
             candidate = null; secondPullCandidate = null;
@@ -389,13 +445,17 @@ final class SeparateShadeSwipeHooks {
         ViewGroup center = (ViewGroup) centerView.get(current.center);
         View bar = (View)centerStatusBar.get(current.center);
         current.behind = (View) centerBehind.get(current.center); current.behindAlpha = current.behind.getAlpha();
-        for (int i = 0; i < center.getChildCount(); i++) {
-            View child = center.getChildAt(i);
-            if (descendant(bar,child) && child instanceof ViewGroup group) {
+        if (current.vertical) {
+            current.centerViews.add(new Foreground(center));
+        } else {
+            for (int i = 0; i < center.getChildCount(); i++) {
+                View child = center.getChildAt(i);
+                if (descendant(bar,child) && child instanceof ViewGroup group) {
 
-                for (int j=0;j<group.getChildCount();j++)
-                    if (group.getChildAt(j)!=bar) current.centerViews.add(new Foreground(group.getChildAt(j)));
-            } else if (child != current.behind) current.centerViews.add(new Foreground(child));
+                    for (int j=0;j<group.getChildCount();j++)
+                        if (group.getChildAt(j)!=bar) current.centerViews.add(new Foreground(group.getChildAt(j)));
+                } else if (child != current.behind) current.centerViews.add(new Foreground(child));
+            }
         }
         for (String id : new String[]{"scrim_behind", "scrim_notifications"}) {
             int resource = current.root.getResources().getIdentifier(id, "id", "com.android.systemui");
@@ -415,11 +475,12 @@ final class SeparateShadeSwipeHooks {
             centerScale.invoke(current.center, 1f); scrimAlpha.invoke(current.behind, 1f);
             refreshNotificationAlpha(shared);
         } finally { bypass.remove(); }
-        current.statusBar = new SeparateShadeStatusBar(bar,(View)notificationStatusBar.get(current.panel));
+        current.statusBar = current.vertical ? null
+                : new SeparateShadeStatusBar(bar,(View)notificationStatusBar.get(current.panel));
         current.preDraw = () -> {
             if (state != current) return true;
             try {
-                if (!eligible(current.panel) || current.root.getWidth() != (int) current.width
+                if (!stateEligible(current) || current.root.getWidth() != (int) current.width
                         || current.root.getHeight() != (int) current.height
                         || panelFraction.getFloat(current.panel) < .999f || centerFraction.getFloat(current.center) < .999f) finishSafely(current, current.sourceCenter);
                 else render(current);
@@ -449,7 +510,7 @@ final class SeparateShadeSwipeHooks {
             for (Foreground item : current.notificationViews) item.move(-position);
             for (Foreground item : current.centerViews) item.move(current.width - position);
         }
-        current.statusBar.apply(fraction);
+        if (current.statusBar != null) current.statusBar.apply(fraction);
         current.behind.setAlpha(current.behindAlpha * fraction);
         for (Foreground item : current.notificationBackgrounds) item.view.setAlpha(item.alpha * (1f - fraction));
         backdrop.apply(fraction);
@@ -500,12 +561,17 @@ final class SeparateShadeSwipeHooks {
         try {
             // A lockscreen, mode change or external collapse must keep its native destination.
             Object winner = toCenter ? current.center : current.panel;
-            boolean keepOpen = current.root.isAttachedToWindow() && barState.getInt(current.panel) == 0
+            boolean keepOpen = (!current.fromClosed || toCenter)
+                    && current.root.isAttachedToWindow() && barState.getInt(current.panel) == 0
                     && !Boolean.TRUE.equals(isKeyguardShowing.invoke(current.panel))
                     && !Boolean.TRUE.equals(flowValue.invoke(combined.invoke(shadeInteractor.get(current.panel))))
                     && (toCenter ? centerFraction : panelFraction).getFloat(winner) >= .999f;
             if (keepOpen) { cancelAnimations(current.panel); cancelAnimations(current.center); }
             if (toCenter) panelCollapse.invoke(current.panel); else centerCollapse.invoke(current.center);
+            if (current.fromClosed && !toCenter) {
+                panelCollapse.invoke(current.panel);
+                contentPose.accept(current.panel, false); contentPose.accept(current.center, false);
+            }
             if (keepOpen) {
                 contentPose.accept(current.panel, !toCenter); contentPose.accept(current.center, toCenter);
                 (toCenter ? centerSetFraction : panelSetFraction).invoke(winner, 1f);
@@ -567,6 +633,7 @@ final class SeparateShadeSwipeHooks {
     }
     private record Candidate(View root, Object panel, boolean center, float x, float y, View pages) {}
     private record SecondPullCandidate(View root, Object panel, Object center, float x, float y) {}
+    private record RegionPull(View root, Object panel, Object center, float x, float y) {}
     private record RegionDecision(long downTime, boolean center) {}
     private static final class Foreground {
         final View view; final float alpha; float x, appliedX, y, appliedY;
@@ -596,7 +663,7 @@ final class SeparateShadeSwipeHooks {
         final float width, height, minFling, maxFling;
         final VelocityTracker velocity = VelocityTracker.obtain();
         final List<Foreground> notificationViews = new ArrayList<>(), centerViews = new ArrayList<>(), notificationBackgrounds = new ArrayList<>();
-        View behind; float behindAlpha = 1f, downX, downY, base, position; boolean dragging = true, vertical;
+        View behind; float behindAlpha = 1f, downX, downY, base, position; boolean dragging = true, vertical, fromClosed;
         ValueAnimator animator; ViewTreeObserver.OnPreDrawListener preDraw;
         State(Candidate candidate, Object center, ViewConfiguration configuration) {
             root = candidate.root; panel = candidate.panel; this.center = center; sourceCenter = candidate.center;
@@ -612,6 +679,10 @@ final class SeparateShadeSwipeHooks {
             base = position = 0f; vertical = true;
             minFling = Math.max(configuration.getScaledMinimumFlingVelocity(), 600f * root.getResources().getDisplayMetrics().density);
             maxFling = configuration.getScaledMaximumFlingVelocity();
+        }
+        State(View root, Object panel, Object center, ViewConfiguration configuration, boolean fromClosed) {
+            this(root, panel, center, configuration);
+            this.fromClosed = fromClosed;
         }
         float dimension() { return vertical ? height : width; }
         float fraction() {

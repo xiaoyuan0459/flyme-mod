@@ -15,12 +15,14 @@ import android.os.Looper;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -37,32 +39,24 @@ final class SignalHooks {
 
     private static final String MOBILE = "com.flyme.systemui.statusbar.net.mobile.ui.view.FlymeModernStatusBarMobileView";
     private static final String CONTAINER = "com.android.systemui.statusbar.phone.StatusIconContainer";
-    // TelephonyDisplayInfo override values. Referenced numerically so hidden/SystemApi
-    // constants are not required at build time.
-    private static final int OVERRIDE_NR_NSA = 3;
-    private static final int OVERRIDE_NR_NSA_MMWAVE = 4;
-    private static final int OVERRIDE_NR_ADVANCED = 5;
-    private static volatile int radioNetworkType = Integer.MIN_VALUE;
-    private static volatile int radioOverrideNetworkType = Integer.MIN_VALUE;
-    private static volatile int radioNrState = Integer.MIN_VALUE;
-    private static volatile String radioNrCaState = "";
     private final ClassLoader loader;
     private final Installer installer;
     private final Consumer<Context> settings;
+    private final Consumer<TextView> statusBarFont;
     private final BooleanSupplier merge, network;
     private final BiConsumer<String, Throwable> log;
     private final Map<View, Mobile> mobiles = new WeakHashMap<>();
     private boolean receiverRegistered;
     private TelephonyCallback dataCallback;
     private ConnectivityManager.NetworkCallback networkCallback;
-    private volatile boolean ratRefreshPending;
     private boolean wifiDefault;
 
-    SignalHooks(ClassLoader loader, Installer installer, Consumer<Context> settings,
+    SignalHooks(ClassLoader loader, Installer installer, Consumer<Context> settings, Consumer<TextView> statusBarFont,
                 BooleanSupplier merge, BooleanSupplier network, BiConsumer<String, Throwable> log) {
         this.loader = loader;
         this.installer = installer;
         this.settings = settings;
+        this.statusBarFont = statusBarFont;
         this.merge = merge;
         this.network = network;
         this.log = log;
@@ -142,48 +136,6 @@ final class SignalHooks {
             return result;
         }, Canvas.class);
 
-        installer.hook("android.telephony.TelephonyDisplayInfo", "getNetworkType", chain -> {
-            Object result = chain.proceed();
-            if (result instanceof Integer && radioNetworkType != (Integer) result) {
-                radioNetworkType = (Integer) result;
-                scheduleRatRefresh();
-            }
-            return result;
-        });
-        installer.hook("android.telephony.TelephonyDisplayInfo", "getOverrideNetworkType", chain -> {
-            Object result = chain.proceed();
-            if (result instanceof Integer && radioOverrideNetworkType != (Integer) result) {
-                radioOverrideNetworkType = (Integer) result;
-                scheduleRatRefresh();
-            }
-            return result;
-        });
-        installer.hook("android.telephony.ServiceState", "getNrState", chain -> {
-            Object result = chain.proceed();
-            if (result instanceof Integer && radioNrState != (Integer) result) {
-                radioNrState = (Integer) result;
-                scheduleRatRefresh();
-            }
-            return result;
-        });
-        installer.hook("android.telephony.ServiceState", "getNrCaState", chain -> {
-            Object result = chain.proceed();
-            String value = result == null ? "" : String.valueOf(result);
-            if (!value.equalsIgnoreCase(radioNrCaState)) {
-                radioNrCaState = value;
-                scheduleRatRefresh();
-            }
-            return result;
-        });
-    }
-
-    private void scheduleRatRefresh() {
-        if (ratRefreshPending) return;
-        ratRefreshPending = true;
-        new Handler(Looper.getMainLooper()).post(() -> {
-            ratRefreshPending = false;
-            for (Mobile mobile : new ArrayList<>(mobiles.values())) requestUpdate(mobile);
-        });
     }
 
     private void initialize(ViewGroup root) throws ReflectiveOperationException {
@@ -196,22 +148,15 @@ final class SignalHooks {
         Mobile mobile = new Mobile(root, signal, type, inout, group);
         mobiles.put(root, mobile);
         if (network.getAsBoolean()) {
-            int iconSizeId = root.getResources().getIdentifier("status_bar_icon_size", "dimen", "com.android.systemui");
-            int iconSize = iconSizeId == 0 ? 0 : root.getResources().getDimensionPixelSize(iconSizeId);
-            mobile.label = new NetworkTypeBadgeView(root.getContext(), iconSize);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            if (type.getLayoutParams() instanceof LinearLayout.LayoutParams nativeParams) {
-                params.setMarginStart(nativeParams.getMarginStart());
-                params.setMarginEnd(nativeParams.getMarginEnd());
-                params.topMargin = nativeParams.topMargin;
-                params.bottomMargin = nativeParams.bottomMargin;
-                params.gravity = nativeParams.gravity;
-            } else {
-                params.setMarginEnd(Math.round(2 * root.getResources().getDisplayMetrics().density));
-            }
-            int typeIndex = group.indexOfChild(type);
-            group.addView(mobile.label, Math.max(0, typeIndex), params);
+            mobile.label = new TextView(root.getContext());
+            mobile.label.setGravity(Gravity.CENTER_VERTICAL);
+            int sizeId = root.getResources().getIdentifier("status_bar_clock_size", "dimen", "com.android.systemui");
+            mobile.label.setTextSize(TypedValue.COMPLEX_UNIT_PX, 0.9f * (sizeId != 0
+                    ? root.getResources().getDimension(sizeId) : 13 * root.getResources().getDisplayMetrics().density));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            params.setMarginEnd(Math.round(2 * root.getResources().getDisplayMetrics().density));
+            statusBarFont.accept(mobile.label);
+            group.addView(mobile.label, 0, params);
             type.setVisibility(View.GONE);
         }
         if (!receiverRegistered) {
@@ -288,10 +233,8 @@ final class SignalHooks {
             }
             if (mobile.label == null) continue;
             Mobile source = primary == mobile ? data : (!mobile.secondary && mobile == data ? mobile : null);
-            String label = source == null || wifiDefault ? "" : preferRat(source.rat);
-            if (!android.text.TextUtils.equals(mobile.label.getLabel(), label)) {
-                mobile.label.setLabel(label);
-            }
+            String label = source == null || wifiDefault ? "" : source.rat;
+            if (!android.text.TextUtils.equals(mobile.label.getText(), label)) mobile.label.setText(label);
             mobile.label.setVisibility(label.isEmpty() ? View.GONE : View.VISIBLE);
             mobile.type.setVisibility(View.GONE);
             updateTint(mobile);
@@ -332,7 +275,7 @@ final class SignalHooks {
     private static void updateTint(Mobile mobile) {
         if (mobile.label == null) return;
         ColorStateList tint = mobile.signal.getImageTintList();
-        if (tint != null) mobile.label.setTintList(tint);
+        if (tint != null) mobile.label.setTextColor(tint);
     }
 
     private static int activeDataSubscription() {
@@ -345,57 +288,16 @@ final class SignalHooks {
 
     private static String ratName(Context context, int resource) {
         if (resource == 0) return "";
-        String name = context.getResources().getResourceEntryName(resource).toLowerCase(java.util.Locale.ROOT)
-                .replace('-', '_').replace(' ', '_');
-        String compact = name.replace("_", "");
-        if (compact.contains("5g") || compact.contains("nr5g")
-                || name.contains("nr_advanced") || name.contains("nr_5g")) {
-            boolean advanced = compact.contains("advanced") || compact.contains("5ga")
-                    || compact.contains("plusa") || compact.contains("5gplusa")
-                    || compact.contains("nradv");
-            boolean plus = compact.contains("plus") || name.contains("+");
-            if (advanced) return "5G+A";
-            if (plus) return "5G+";
-            return "5G";
-        }
-        if (compact.contains("4g") || compact.contains("lte")) return compact.contains("plus") ? "4G+" : "4G";
-        if (compact.contains("3g")) return "3G";
+        String name = context.getResources().getResourceEntryName(resource).toLowerCase(java.util.Locale.ROOT);
+        if (name.contains("5g")) return name.contains("plus") ? "5G+" : "5G";
+        if (name.contains("4g") || name.contains("lte")) return name.contains("plus") ? "4G+" : "4G";
+        if (name.contains("3g")) return "3G";
         if (name.contains("h_plus")) return "H+";
         if (name.contains("_h")) return "H";
         if (name.contains("_1x")) return "1X";
         if (name.contains("_e")) return "E";
         if (name.contains("_g")) return "G";
         return "";
-    }
-
-    private static String preferRat(String nativeRat) {
-        String telephony = telephonyFivegLabel();
-        if (telephony == null) return nativeRat;
-        return fivegRank(telephony) >= fivegRank(nativeRat) ? telephony : nativeRat;
-    }
-
-    private static int fivegRank(String label) {
-        if (label == null || label.isEmpty()) return 0;
-        if (label.startsWith("5G+A") || label.startsWith("5GA")) return 4;
-        if (label.startsWith("5G+")) return 3;
-        if (label.startsWith("5G")) return 2;
-        return 1;
-    }
-
-    private static String telephonyFivegLabel() {
-        if (radioOverrideNetworkType == OVERRIDE_NR_ADVANCED) return "5G+A";
-        if (radioOverrideNetworkType == OVERRIDE_NR_NSA_MMWAVE) return "5G+";
-        if (radioOverrideNetworkType == OVERRIDE_NR_NSA) return "5G";
-        if (radioNetworkType == TelephonyManager.NETWORK_TYPE_NR)
-            return nrCaEnabled() ? "5G+" : "5G";
-        if (radioNrState == 2 || radioNrState == 3)
-            return nrCaEnabled() ? "5G+" : "5G";
-        return null;
-    }
-
-    private static boolean nrCaEnabled() {
-        return "true".equalsIgnoreCase(radioNrCaState) || "1".equals(radioNrCaState)
-                || "2".equals(radioNrCaState);
     }
 
     private static int id(View view, String name) {
@@ -409,7 +311,7 @@ final class SignalHooks {
         final ImageView signal, type, inout;
         final LinearLayout group;
         final int inoutMarginStart, inoutMarginTop, inoutGravity;
-        NetworkTypeBadgeView label;
+        TextView label;
         Mobile primary, mergedSecond;
         boolean secondary;
         String rat = "";

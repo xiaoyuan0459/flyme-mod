@@ -13,7 +13,7 @@ import android.view.View;
  * subscript so the small glyphs do not depend on font metrics or TextView span clipping.
  */
 final class NetworkTypeBadgeView extends View {
-    private static final float MAIN_SIZE_RATIO = .60f;
+    private static final float MAIN_SIZE_RATIO = .56f;
     private static final float SUFFIX_SIZE_RATIO = .46f;
     private static final float PLUS_SIZE_RATIO = .48f;
     private static final float PLUS_STROKE_RATIO = .075f;
@@ -25,6 +25,7 @@ final class NetworkTypeBadgeView extends View {
     private final Paint mainPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final Paint suffixPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final Paint plusPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final int iconSize;
 
     private ColorStateList tint;
     private String label = "";
@@ -33,8 +34,10 @@ final class NetworkTypeBadgeView extends View {
     private float mainSize, suffixSize, plusSize, plusStroke;
     private float gap, sidePadding, mainWidth, suffixWidth, contentWidth, baseline;
 
-    NetworkTypeBadgeView(Context context) {
+    NetworkTypeBadgeView(Context context, int iconSize) {
         super(context);
+        this.iconSize = iconSize > 0 ? iconSize
+                : Math.round(18f * getResources().getDisplayMetrics().density);
         setWillNotDraw(false);
         plusPaint.setStyle(Paint.Style.FILL);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
@@ -91,7 +94,9 @@ final class NetworkTypeBadgeView extends View {
     }
 
     private void updateMetrics(int height) {
-        mainSize = Math.max(1f, height * MAIN_SIZE_RATIO);
+        float density = getResources().getDisplayMetrics().density;
+        float base = Math.max(15f * density, Math.min(iconSize, 20f * density));
+        mainSize = Math.max(1f, base * MAIN_SIZE_RATIO);
         suffixSize = mainSize * SUFFIX_SIZE_RATIO;
         plusSize = mainSize * PLUS_SIZE_RATIO;
         plusStroke = Math.max(1f, mainSize * PLUS_STROKE_RATIO);
@@ -101,7 +106,6 @@ final class NetworkTypeBadgeView extends View {
         if (face == null) face = Typeface.DEFAULT_BOLD;
         mainPaint.setTypeface(face);
         mainPaint.setTextSize(mainSize);
-        mainPaint.setLetterSpacing(-.01f);
         mainWidth = mainPaint.measureText(mainText);
         suffixPaint.setTypeface(face);
         suffixPaint.setTextSize(suffixSize);

@@ -196,9 +196,20 @@ final class SignalHooks {
         Mobile mobile = new Mobile(root, signal, type, inout, group);
         mobiles.put(root, mobile);
         if (network.getAsBoolean()) {
-            mobile.label = new NetworkTypeBadgeView(root.getContext());
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            params.setMarginEnd(Math.round(2 * root.getResources().getDisplayMetrics().density));
+            int iconSizeId = root.getResources().getIdentifier("status_bar_icon_size", "dimen", "com.android.systemui");
+            int iconSize = iconSizeId == 0 ? 0 : root.getResources().getDimensionPixelSize(iconSizeId);
+            mobile.label = new NetworkTypeBadgeView(root.getContext(), iconSize);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            if (type.getLayoutParams() instanceof LinearLayout.LayoutParams nativeParams) {
+                params.setMarginStart(nativeParams.getMarginStart());
+                params.setMarginEnd(nativeParams.getMarginEnd());
+                params.topMargin = nativeParams.topMargin;
+                params.bottomMargin = nativeParams.bottomMargin;
+                params.gravity = nativeParams.gravity;
+            } else {
+                params.setMarginEnd(Math.round(2 * root.getResources().getDisplayMetrics().density));
+            }
             int typeIndex = group.indexOfChild(type);
             group.addView(mobile.label, Math.max(0, typeIndex), params);
             type.setVisibility(View.GONE);

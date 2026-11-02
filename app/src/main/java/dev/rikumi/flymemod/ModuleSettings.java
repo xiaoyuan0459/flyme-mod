@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 
 public final class ModuleSettings {
+    public static final String MODULE_ENABLED = "module_enabled";
     public static final String LAUNCHER_EXTRA_ROW = "launcher_extra_row";
     public static final String AUTO_BRIGHTNESS_OFFSET_ENABLED = "auto_brightness_offset_enabled";
     public static final String AUTO_BRIGHTNESS_OFFSET = "auto_brightness_offset";

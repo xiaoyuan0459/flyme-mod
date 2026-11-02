@@ -407,6 +407,15 @@ public final class SettingsProvider extends ContentProvider {
         values.add(ModuleSettings.controlCenterPullRegionStart(
                 prefs.getInt(ModuleSettings.CONTROL_CENTER_PULL_REGION_START,
                         ModuleSettings.CONTROL_CENTER_PULL_REGION_START_DEFAULT)));
+        // The master switch gates runtime behavior without touching the saved configuration.
+        // SystemUI therefore receives neutral values while every preference remains untouched.
+        if (!prefs.getBoolean(ModuleSettings.MODULE_ENABLED, true)) {
+            for (int i = 0; i < values.size(); i++) {
+                Object value = values.get(i);
+                if (value instanceof Integer) values.set(i, 0);
+                else if (value instanceof String) values.set(i, "");
+            }
+        }
         cursor.addRow(values);
         return cursor;
     }

@@ -3,6 +3,10 @@ package dev.rikumi.flymemod
 import android.content.SharedPreferences
 
 internal object OneClickPreset {
+    private const val BACKUP_PRESENT = "one_click_preset_backup_present"
+    private const val BACKUP_BOOLEAN_PREFIX = "one_click_preset_backup_boolean_"
+    private const val BACKUP_INT_PREFIX = "one_click_preset_backup_int_"
+
     // Only these switches are disabled by the developer preset.
     private val disabledSwitches = setOf(
         ModuleSettings.LAUNCHER_EXTRA_ROW,
@@ -21,6 +25,11 @@ internal object OneClickPreset {
 
         // Hide lunar switch is left disabled by default.
         ModuleSettings.HIDE_LUNAR,
+
+        // Gesture-changing notifications and shade behavior stay opt-in.
+        ModuleSettings.NOTIFICATION_APP_GROUPING,
+        ModuleSettings.SHADE_SECOND_PULL_CONTROL_CENTER,
+        ModuleSettings.CONTROL_CENTER_PULL_REGION_ENABLED,
     )
 
     // Legacy and custom controls have no SwitchItem in the settings catalog.
@@ -118,6 +127,11 @@ internal object OneClickPreset {
         ModuleSettings.LANDSCAPE_GAME_ENABLED,
     )
 
+    private val intDefaults: Map<String, Int> = buildMap {
+        putAll(values)
+        modeKeys.forEach { key -> if (!containsKey(key)) put(key, 0) }
+    }
+
     fun isEnabled(preferences: SharedPreferences): Boolean =
         switches.keys.any { preferences.getBoolean(it, false) } ||
             preferences.getBoolean(ModuleSettings.APP_IMMERSIVE_NAVIGATION, false) ||
@@ -128,18 +142,58 @@ internal object OneClickPreset {
                 !preferences.getStringSet(ModuleSettings.LANDSCAPE_GAME_PACKAGES, emptySet()).isNullOrEmpty()) ||
             modeKeys.any { preferences.getInt(it, if (it == ModuleSettings.STATUS_BAR_CHARGING_INFO) ModuleSettings.STATUS_BAR_CHARGING_INFO_DEFAULT else 0) != 0 }
 
-    fun apply(editor: SharedPreferences.Editor, enabled: Boolean) {
+    fun hasBackup(preferences: SharedPreferences): Boolean =
+        preferences.getBoolean(BACKUP_PRESENT, false)
+
+    fun apply(preferences: SharedPreferences, editor: SharedPreferences.Editor, enabled: Boolean) {
         if (enabled) {
-            switches.forEach { (key, value) -> editor.putBoolean(key, value) }
-            // Presentation override stays at the native policy in the developer preset.
-            editor.putInt(ModuleSettings.TICKER_DISPLAY_MODE, 0)
-            values.forEach { (key, value) ->
-                if (key !in modeKeys || value != 0) editor.putInt(key, value)
-            }
+            if (preferences.getBoolean(BACKUP_PRESENT, false)) restore(preferences, editor)
+            else applyDeveloperPreset(editor)
         } else {
-            switches.keys.forEach { editor.putBoolean(it, false) }
-            applicationSwitches.forEach { editor.putBoolean(it, false) }
-            modeKeys.forEach { editor.putInt(it, 0) }
+            backup(preferences, editor)
+            disableAll(editor)
         }
+    }
+
+    private fun applyDeveloperPreset(editor: SharedPreferences.Editor) {
+        switches.forEach { (key, value) -> editor.putBoolean(key, value) }
+        // Presentation override stays at the native policy in the developer preset.
+        editor.putInt(ModuleSettings.TICKER_DISPLAY_MODE, 0)
+        values.forEach { (key, value) ->
+            if (key !in modeKeys || value != 0) editor.putInt(key, value)
+        }
+    }
+
+    private fun disableAll(editor: SharedPreferences.Editor) {
+        switches.keys.forEach { editor.putBoolean(it, false) }
+        applicationSwitches.forEach { editor.putBoolean(it, false) }
+        modeKeys.forEach { editor.putInt(it, 0) }
+    }
+
+    // Turning the master switch off disables every feature; re-enabling restores the user's
+    // previous selection instead of replacing it with the developer defaults.
+    private fun backup(preferences: SharedPreferences, editor: SharedPreferences.Editor) {
+        switches.keys.forEach { key ->
+            editor.putBoolean(BACKUP_BOOLEAN_PREFIX + key, preferences.getBoolean(key, false))
+        }
+        intDefaults.keys.forEach { key ->
+            editor.putInt(BACKUP_INT_PREFIX + key,
+                preferences.getInt(key, intDefaults.getValue(key)))
+        }
+        editor.putBoolean(BACKUP_PRESENT, true)
+    }
+
+    private fun restore(preferences: SharedPreferences, editor: SharedPreferences.Editor) {
+        switches.keys.forEach { key ->
+            val backup = BACKUP_BOOLEAN_PREFIX + key
+            if (preferences.contains(backup)) editor.putBoolean(key, preferences.getBoolean(backup, false))
+            editor.remove(backup)
+        }
+        intDefaults.forEach { (key, defaultValue) ->
+            val backup = BACKUP_INT_PREFIX + key
+            if (preferences.contains(backup)) editor.putInt(key, preferences.getInt(backup, defaultValue))
+            editor.remove(backup)
+        }
+        editor.remove(BACKUP_PRESENT)
     }
 }

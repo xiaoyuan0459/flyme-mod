@@ -30,7 +30,11 @@ internal fun HomeModuleControls() {
     FluixMasterToggle(
         checked = checked,
         title = if (checked) "启用模块" else "一键启用",
-        subtitle = if (checked) null else "应用开发者的默认设置",
+        subtitle = when {
+            checked -> null
+            OneClickPreset.hasBackup(preferences) -> "重新启用后恢复上次配置"
+            else -> "应用开发者的默认设置"
+        },
         onCheckedChange = { enabled ->
             if (!busy) {
                 busy = true
@@ -38,7 +42,7 @@ internal fun HomeModuleControls() {
                     try {
                         val success = withContext(Dispatchers.IO) {
                             val saved = preferences.edit().also {
-                                OneClickPreset.apply(it, enabled)
+                                OneClickPreset.apply(preferences, it, enabled)
                             }.commit()
                             if (saved) ModuleSettings.MEDIA_FOLDERS.forEach { (folder, key) ->
                                 updateMediaFolder(folder, preferences.getBoolean(key, false))

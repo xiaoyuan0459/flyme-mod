@@ -126,6 +126,11 @@ public final class XposedInit extends XposedModule {
     private boolean combinedPullAnimationEnabled;
     private boolean qsTranslationOriginEnabled;
     private boolean separateShadeSwipeEnabled;
+    private boolean shadeSecondPullControlCenterEnabled;
+    private boolean controlCenterPullRegionEnabled;
+    private int controlCenterPullRegionStart = ModuleSettings.CONTROL_CENTER_PULL_REGION_START_DEFAULT;
+    private boolean notificationAppGroupingEnabled;
+    private NotificationGroupPagingHooks activeNotificationGroupPagingHooks;
     private boolean secondaryExpansionEnabled;
     private boolean combinedEmptyShadeKeepOpenEnabled;
     private boolean combinedFilterSettingsEnabled;
@@ -1056,6 +1061,8 @@ public final class XposedInit extends XposedModule {
         installBackgroundScale(loader);
         try {
             SeparateShadeSwipeHooks swipe = new SeparateShadeSwipeHooks(loader, this::loadSettings, () -> separateShadeSwipeEnabled,
+                    () -> shadeSecondPullControlCenterEnabled, () -> controlCenterPullRegionEnabled,
+                    () -> controlCenterPullRegionStart,
                     (message, error) -> log(Log.ERROR, "FlymeMod", message, error));
             activeSeparateShadeSwipeHooks = swipe;
             swipe.setBlurRadiusOverride(() -> blurRadiusEnabled ? blurRadius * ModuleSettings.BLUR_SCALE : -1);
@@ -1090,6 +1097,15 @@ public final class XposedInit extends XposedModule {
                     (name, method, hooker, parameters) -> install(loader, name, method, hooker, parameters), this::deoptimize);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError error) {
             log(Log.ERROR, "FlymeMod", "Cannot resolve notification swipe segments", error);
+        }
+        try {
+            activeNotificationGroupPagingHooks = new NotificationGroupPagingHooks(loader, this::loadSettings,
+                    () -> notificationAppGroupingEnabled,
+                    (message, error) -> log(Log.ERROR, "FlymeMod", message, error));
+            activeNotificationGroupPagingHooks.install(
+                    (name, method, hooker, parameters) -> install(loader, name, method, hooker, parameters));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError error) {
+            log(Log.ERROR, "FlymeMod", "Cannot resolve notification group paging", error);
         }
         try {
             activeCircleTileHooks = new CircleTileHooks(loader, this::loadSettings, () -> circleSmallTilesEnabled,
@@ -2735,6 +2751,7 @@ public final class XposedInit extends XposedModule {
         if (activeFoldIdleMediaHooks != null) activeFoldIdleMediaHooks.refresh();
         if (activeMediaSwipeHooks != null) activeMediaSwipeHooks.refresh();
         if (activeNotificationSwipeHooks != null) activeNotificationSwipeHooks.refresh();
+        if (activeNotificationGroupPagingHooks != null) activeNotificationGroupPagingHooks.refresh();
         // Restore custom square corners before forcing circles; restore circles before applying custom corners.
         if (activeTileCornerHooks != null && circleSmallTilesEnabled) activeTileCornerHooks.refresh();
         if (activeCircleTileHooks != null) activeCircleTileHooks.refresh();
@@ -3027,6 +3044,16 @@ public final class XposedInit extends XposedModule {
                 int backgroundScaleColumn = cursor.getColumnIndex(ModuleSettings.BACKGROUND_SCALE);
                 backgroundScale = Math.max(0, Math.min(ModuleSettings.BACKGROUND_SCALE_MAX,
                         backgroundScaleColumn >= 0 ? cursor.getInt(backgroundScaleColumn) : ModuleSettings.BACKGROUND_SCALE_DEFAULT));
+                int notificationGroupingColumn = cursor.getColumnIndex(ModuleSettings.NOTIFICATION_APP_GROUPING);
+                notificationAppGroupingEnabled = notificationGroupingColumn >= 0 && cursor.getInt(notificationGroupingColumn) != 0;
+                int secondPullColumn = cursor.getColumnIndex(ModuleSettings.SHADE_SECOND_PULL_CONTROL_CENTER);
+                shadeSecondPullControlCenterEnabled = secondPullColumn >= 0 && cursor.getInt(secondPullColumn) != 0;
+                int pullRegionEnabledColumn = cursor.getColumnIndex(ModuleSettings.CONTROL_CENTER_PULL_REGION_ENABLED);
+                controlCenterPullRegionEnabled = pullRegionEnabledColumn >= 0 && cursor.getInt(pullRegionEnabledColumn) != 0;
+                int pullRegionStartColumn = cursor.getColumnIndex(ModuleSettings.CONTROL_CENTER_PULL_REGION_START);
+                controlCenterPullRegionStart = pullRegionStartColumn < 0
+                        ? ModuleSettings.CONTROL_CENTER_PULL_REGION_START_DEFAULT
+                        : ModuleSettings.controlCenterPullRegionStart(cursor.getInt(pullRegionStartColumn));
                 int wallpaperFixColumn = cursor.getColumnIndex(ModuleSettings.WALLPAPER_STARTUP_FIX);
                 wallpaperStartupFixEnabled = wallpaperFixColumn >= 0 && cursor.getInt(wallpaperFixColumn) != 0;
                 int hiddenColumn = cursor.getColumnIndex(ModuleSettings.HIDDEN_LAUNCHER_APPS);

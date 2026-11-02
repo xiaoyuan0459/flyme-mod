@@ -10,6 +10,10 @@ final class SeparateShadeSwipeMotion {
         return position;
     }
 
+    static float resistVertical(float distance, float height) {
+        return Math.max(0f, Math.min(height, distance));
+    }
+
     static float fraction(float position, float width) {
         return Math.max(0f, Math.min(1f, position / Math.max(1f, width)));
     }
@@ -25,6 +29,11 @@ final class SeparateShadeSwipeMotion {
     static boolean centerTarget(float position, float width, float velocity, float minimumFling) {
         if (Math.abs(velocity) >= minimumFling) return velocity > 0f;
         return position >= width * .5f;
+    }
+
+    static boolean verticalTarget(float position, float height, float velocity, float minimumFling) {
+        if (Math.abs(velocity) >= minimumFling) return velocity > 0f;
+        return position >= height * .28f;
     }
 
     static float spring(float seconds, float start, float target, float velocity) {

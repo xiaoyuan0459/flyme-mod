@@ -141,6 +141,19 @@ internal val SETTINGS_GROUPS: Map<String, List<SettingsGroup>> = mapOf(
             SwitchItem(ModuleSettings.SECONDARY_EXPANSION_FIX, "修复合并控制中心二次展开动画"),
             SwitchItem(ModuleSettings.COMBINED_EMPTY_SHADE_KEEP_OPEN, "合并控制中心清空通知后保持开启"),
         )),
+        SettingsGroup("控制中心手势", listOf(
+            SwitchItem(ModuleSettings.SHADE_SECOND_PULL_CONTROL_CENTER, "通知栏再次下滑打开控制中心",
+                subtitle = "在通知中心顶部再次下拉时切换页面（需开启双向滑动切换）"),
+            SwitchItem(ModuleSettings.CONTROL_CENTER_PULL_REGION_ENABLED, "按区域呼出控制中心",
+                subtitle = "从状态栏右侧指定比例区域下拉时直接打开控制中心",
+                slider = SliderSpec(
+                    ModuleSettings.CONTROL_CENTER_PULL_REGION_START,
+                    ModuleSettings.CONTROL_CENTER_PULL_REGION_START_DEFAULT, 0, 100,
+                    unit = "%", step = 5,
+                    format = { "从 $it% 到右侧" },
+                ),
+            ),
+        )),
         SettingsGroup("亮度调节设置", listOf(
             SwitchItem(ModuleSettings.AUTO_BRIGHTNESS_OFFSET_ENABLED, "自动亮度偏移",
                 slider = SliderSpec(
@@ -186,6 +199,8 @@ internal val SETTINGS_GROUPS: Map<String, List<SettingsGroup>> = mapOf(
         )),
         SettingsGroup("通知中心设置", listOf(
             CustomItem("disable_notification_bubbles") { NotificationBubblesPreference() },
+            SwitchItem(ModuleSettings.NOTIFICATION_APP_GROUPING, "同应用通知横向翻页",
+                subtitle = "在折叠的同应用通知卡片上左右滑动切换通知"),
             SwitchItem(ModuleSettings.NOTIFICATION_SWIPE_SEGMENTS, "通知侧滑删除分段动画"),
             SwitchItem(ModuleSettings.HEADS_UP_WIDTH, "增加浮动通知宽度"),
             SwitchItem(ModuleSettings.NOTIFICATION_READ_LAYER_FIX, "修复已读通知动画层级"),

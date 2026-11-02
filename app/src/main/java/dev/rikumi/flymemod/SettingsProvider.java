@@ -216,6 +216,10 @@ public final class SettingsProvider extends ContentProvider {
         columns.add(ModuleSettings.SEPARATE_SHADE_SWIPE);
         columns.add(ModuleSettings.BACKGROUND_SCALE_ENABLED);
         columns.add(ModuleSettings.BACKGROUND_SCALE);
+        columns.add(ModuleSettings.NOTIFICATION_APP_GROUPING);
+        columns.add(ModuleSettings.SHADE_SECOND_PULL_CONTROL_CENTER);
+        columns.add(ModuleSettings.CONTROL_CENTER_PULL_REGION_ENABLED);
+        columns.add(ModuleSettings.CONTROL_CENTER_PULL_REGION_START);
         MatrixCursor cursor = new MatrixCursor(columns.toArray(new String[0]));
         java.util.List<Object> values = new java.util.ArrayList<>(java.util.Arrays.asList(new Object[]{prefs.getBoolean(ModuleSettings.SCALE, false) ? 1 : 0,
                 prefs.getBoolean(ModuleSettings.LIGHT, false) ? 1 : 0,
@@ -397,6 +401,12 @@ public final class SettingsProvider extends ContentProvider {
         values.add(prefs.getBoolean(ModuleSettings.SEPARATE_SHADE_SWIPE, false) ? 1 : 0);
         values.add(prefs.getBoolean(ModuleSettings.BACKGROUND_SCALE_ENABLED, false) ? 1 : 0);
         values.add(prefs.getInt(ModuleSettings.BACKGROUND_SCALE, ModuleSettings.BACKGROUND_SCALE_DEFAULT));
+        values.add(prefs.getBoolean(ModuleSettings.NOTIFICATION_APP_GROUPING, false) ? 1 : 0);
+        values.add(prefs.getBoolean(ModuleSettings.SHADE_SECOND_PULL_CONTROL_CENTER, false) ? 1 : 0);
+        values.add(prefs.getBoolean(ModuleSettings.CONTROL_CENTER_PULL_REGION_ENABLED, false) ? 1 : 0);
+        values.add(ModuleSettings.controlCenterPullRegionStart(
+                prefs.getInt(ModuleSettings.CONTROL_CENTER_PULL_REGION_START,
+                        ModuleSettings.CONTROL_CENTER_PULL_REGION_START_DEFAULT)));
         cursor.addRow(values);
         return cursor;
     }

@@ -28,8 +28,11 @@ final class SeparateShadeSwipeHooks {
     private static final String PANEL = "com.android.systemui.shade.NotificationPanelViewController";
     private static final String CENTER = "com.flyme.systemui.controlcenter.phone.CenterController";
     private static final String ROOT = "com.android.systemui.shade.NotificationShadeWindowView";
+    private static final float SECOND_PULL_TRIGGER_FRACTION = .24f;
     private final Consumer<Context> settings;
     private final BooleanSupplier enabled;
+    private final BooleanSupplier secondPull, pullRegionEnabled;
+    private final IntSupplier pullRegionStart;
     private final BiConsumer<String, Throwable> log;
     private final WeakHashMap<View, WeakReference<Object>> panels = new WeakHashMap<>();
     private final ThreadLocal<Boolean> bypass = new ThreadLocal<>();
@@ -49,6 +52,8 @@ final class SeparateShadeSwipeHooks {
     private final Method pagerScrollState, edgeFactory, cancelEdgeSpring;
     private State state;
     private Candidate candidate;
+    private SecondPullCandidate secondPullCandidate;
+    private final WeakHashMap<Object, RegionDecision> regionDecisions = new WeakHashMap<>();
     private boolean drainTouch;
     private BiConsumer<Object, Boolean> contentPose = (owner, visible) -> {};
 
@@ -59,8 +64,12 @@ final class SeparateShadeSwipeHooks {
     }
 
     SeparateShadeSwipeHooks(ClassLoader loader, Consumer<Context> settings, BooleanSupplier enabled,
-                           BiConsumer<String, Throwable> log) throws ReflectiveOperationException {
+                           BooleanSupplier secondPull, BooleanSupplier pullRegionEnabled,
+                           IntSupplier pullRegionStart, BiConsumer<String, Throwable> log)
+            throws ReflectiveOperationException {
         this.loader = loader; this.settings = settings; this.enabled = enabled; this.log = log;
+        this.secondPull = secondPull; this.pullRegionEnabled = pullRegionEnabled;
+        this.pullRegionStart = pullRegionStart;
         backdrop = new SeparateShadeSwipeBackdrop(loader);
         notificationBackground = loader.loadClass("com.android.systemui.statusbar.notification.row.NotificationBackgroundView");
         notificationAlphaChanged = notificationBackground.getDeclaredMethod("onFlymeAlphaChanged", View.class);
@@ -114,8 +123,17 @@ final class SeparateShadeSwipeHooks {
         backdrop.deoptimizeCallers(loader, deoptimize);
 
         for (String name : new String[]{"canExpandCenterControlPanel", "dispatchEventToControlCenter"}) {
-            installer.hook(PANEL, name, chain -> blockVerticalSwitch(chain.getThisObject())
-                    ? false : chain.proceed(), MotionEvent.class);
+            installer.hook(PANEL, name, chain -> {
+                Object panel = chain.getThisObject();
+                MotionEvent event = (MotionEvent) chain.getArg(0);
+                RegionDecision region = regionDecision(panel, event);
+                if (region != null) {
+                    if (region.center)
+                        return name.equals("canExpandCenterControlPanel") ? true : chain.proceed();
+                    return false;
+                }
+                return blockVerticalSwitch(panel) ? false : chain.proceed();
+            }, MotionEvent.class);
         }
         Class<?> touchHandler = loader.loadClass(PANEL + "$TouchHandler");
         deoptimize.accept(method(touchHandler, "onInterceptTouchEvent", MotionEvent.class));
@@ -182,6 +200,32 @@ final class SeparateShadeSwipeHooks {
                 && !Boolean.TRUE.equals(flowValue.invoke(combined.invoke(shadeInteractor.get(panel))));
     }
 
+    /**
+     * Decides whether a status-bar pull belongs to the control center. The decision is latched on
+     * ACTION_DOWN so that later move coordinates cannot flip the target in the middle of a drag.
+     */
+    private RegionDecision regionDecision(Object panel, MotionEvent event) throws ReflectiveOperationException {
+        if (!pullRegionEnabled.getAsBoolean() || barState.getInt(panel) != 0
+                || Boolean.TRUE.equals(isKeyguardShowing.invoke(panel))) return null;
+        Object center = panelCenter.get(panel);
+        if (disabled.getBoolean(center)
+                || Boolean.TRUE.equals(isDeviceCenterShowing.invoke(deviceCenter.get(center)))
+                || Boolean.TRUE.equals(editing.getType().getMethod("isEditing").invoke(editing.get(center)))) return null;
+        RegionDecision decision = regionDecisions.get(panel);
+        int action = event.getActionMasked();
+        if (decision == null || action == MotionEvent.ACTION_DOWN || decision.downTime != event.getDownTime()) {
+            // Only the initial pull from the closed shade selects the destination page.
+            if (panelFraction.getFloat(panel) > .001f) return null;
+            View view = (View) panelView.get(panel);
+            int width = view.getWidth();
+            if (width <= 0) return null;
+            float start = Math.max(0, Math.min(100, pullRegionStart.getAsInt())) / 100f;
+            decision = new RegionDecision(event.getDownTime(), event.getRawX() >= width * start);
+            regionDecisions.put(panel, decision);
+        }
+        return decision;
+    }
+
     private boolean eligible(Object panel) throws ReflectiveOperationException {
         Object center = panelCenter.get(panel);
         return enabled.getAsBoolean() && barState.getInt(panel) == 0
@@ -212,18 +256,27 @@ final class SeparateShadeSwipeHooks {
             if (!eligible(current.panel)) { finishSafely(current, current.sourceCenter); return true; }
             if (action == MotionEvent.ACTION_DOWN) {
                 if (current.animator != null) { current.animator.cancel(); current.animator = null; }
-                current.downX = event.getRawX(); current.base = current.position;
+                current.downX = event.getRawX(); current.downY = event.getRawY(); current.base = current.position;
                 current.velocity.clear(); current.velocity.addMovement(event);
                 current.dragging = true;
             } else if (current.dragging) {
                 current.velocity.addMovement(event);
                 if (action == MotionEvent.ACTION_MOVE && event.getPointerCount() == 1) {
-                    current.position = SeparateShadeSwipeMotion.resist(current.base + current.downX - event.getRawX(), current.width);
+                    current.position = current.vertical
+                            ? SeparateShadeSwipeMotion.resistVertical(event.getRawY() - current.downY, current.height)
+                            : SeparateShadeSwipeMotion.resist(current.base + current.downX - event.getRawX(), current.width);
                     render(current);
                 } else if (action == MotionEvent.ACTION_UP) {
                     current.velocity.computeCurrentVelocity(1000, current.maxFling);
-                    float speed = -current.velocity.getXVelocity();
-                    settle(current, SeparateShadeSwipeMotion.centerTarget(current.position, current.width, speed, current.minFling), speed);
+                    if (current.vertical) {
+                        float speed = current.velocity.getYVelocity();
+                        settle(current, SeparateShadeSwipeMotion.verticalTarget(
+                                current.position, current.height, speed, current.minFling), speed);
+                    } else {
+                        float speed = -current.velocity.getXVelocity();
+                        settle(current, SeparateShadeSwipeMotion.centerTarget(
+                                current.position, current.width, speed, current.minFling), speed);
+                    }
                 } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
                     settle(current, current.sourceCenter, 0f);
                 }
@@ -231,7 +284,7 @@ final class SeparateShadeSwipeHooks {
             return true;
         }
         if (action == MotionEvent.ACTION_DOWN) {
-            candidate = null;
+            candidate = null; secondPullCandidate = null;
             Object panel = panelFor(root);
             if (panel == null) return false;
             settings.accept(root.getContext());
@@ -245,33 +298,70 @@ final class SeparateShadeSwipeHooks {
             View pager = pages == null ? null : (View) pagesPager.get(pages);
             if (SeparateShadeSwipeTouchTargets.reserved(host, event.getRawX(), event.getRawY(), pager)
                     || (!inCenter && SeparateShadeSwipeTouchTargets.reserved((View) sharedContainer.get(panel), event.getRawX(), event.getRawY(), null))) return false;
+            if (!inCenter && secondPull.getAsBoolean()
+                    && event.getRawY() <= root.getHeight() * SECOND_PULL_TRIGGER_FRACTION) {
+                secondPullCandidate = new SecondPullCandidate(root, panel, center, event.getRawX(), event.getRawY());
+            }
             candidate = new Candidate(root, panel, inCenter, event.getRawX(), event.getRawY(), pages);
-        } else if (candidate != null) {
-            Candidate pending = candidate;
-            if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                candidate = null;
-            } else if (action == MotionEvent.ACTION_MOVE) {
-                ViewConfiguration configuration = ViewConfiguration.get(root.getContext());
-                float dx = event.getRawX() - pending.x, dy = event.getRawY() - pending.y;
-                if (Math.abs(dy) > configuration.getScaledTouchSlop() && Math.abs(dy) >= Math.abs(dx)) candidate = null;
-                else if (SeparateShadeSwipeMotion.horizontal(dx, dy, configuration.getScaledTouchSlop())) {
+        } else {
+            if (secondPullCandidate != null) {
+                SecondPullCandidate pending = secondPullCandidate;
+                if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP
+                        || action == MotionEvent.ACTION_CANCEL) {
+                    secondPullCandidate = null;
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    ViewConfiguration configuration = ViewConfiguration.get(root.getContext());
+                    float dx = event.getRawX() - pending.x, dy = event.getRawY() - pending.y;
+                    float slop = configuration.getScaledTouchSlop();
+                    if (dy < -slop || (Math.abs(dx) > slop && Math.abs(dx) >= Math.abs(dy) * 1.3f)) {
+                        secondPullCandidate = null;
+                    } else if (dy > slop && dy >= Math.abs(dx) * 1.3f) {
+                        secondPullCandidate = null; candidate = null;
+                        State current = new State(pending.root, pending.panel, pending.center, configuration);
+                        current.downX = pending.x; current.downY = pending.y;
+                        state = current;
+                        drainTouch = true;
+                        // Cancel the original child target once through the original dispatch path.
+                        MotionEvent cancel = MotionEvent.obtain(event); cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        bypass.set(true);
+                        try { root.dispatchTouchEvent(cancel); }
+                        finally { bypass.remove(); cancel.recycle(); }
+                        prepare(current);
+                        current.position = SeparateShadeSwipeMotion.resistVertical(
+                                event.getRawY() - pending.y, current.height);
+                        current.velocity.addMovement(event);
+                        render(current);
+                        return true;
+                    }
+                }
+            }
+            if (candidate != null) {
+                Candidate pending = candidate;
+                if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     candidate = null;
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    ViewConfiguration configuration = ViewConfiguration.get(root.getContext());
+                    float dx = event.getRawX() - pending.x, dy = event.getRawY() - pending.y;
+                    if (Math.abs(dy) > configuration.getScaledTouchSlop() && Math.abs(dy) >= Math.abs(dx)) candidate = null;
+                    else if (SeparateShadeSwipeMotion.horizontal(dx, dy, configuration.getScaledTouchSlop())) {
+                        candidate = null;
 
-                    if (!SeparateShadeSwipeMotion.canStart(pending.center, pending.pages == null ? 0 : currentPage.getInt(pending.pages),
-                            !pending.center || firstPageBoundary(pending.pages), dx)) return false;
-                    State current = new State(pending, panelCenter.get(pending.panel), configuration);
-                    state = current;
-                    drainTouch = true;
-                    // Cancel the original child target once through the original dispatch path.
-                    MotionEvent cancel = MotionEvent.obtain(event); cancel.setAction(MotionEvent.ACTION_CANCEL);
-                    bypass.set(true);
-                    try { root.dispatchTouchEvent(cancel); }
-                    finally { bypass.remove(); cancel.recycle(); }
-                    prepare(current);
-                    current.position = SeparateShadeSwipeMotion.resist(current.base - dx, current.width);
-                    current.velocity.addMovement(event);
-                    render(current);
-                    return true;
+                        if (!SeparateShadeSwipeMotion.canStart(pending.center, pending.pages == null ? 0 : currentPage.getInt(pending.pages),
+                                !pending.center || firstPageBoundary(pending.pages), dx)) return false;
+                        State current = new State(pending, panelCenter.get(pending.panel), configuration);
+                        state = current;
+                        drainTouch = true;
+                        // Cancel the original child target once through the original dispatch path.
+                        MotionEvent cancel = MotionEvent.obtain(event); cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        bypass.set(true);
+                        try { root.dispatchTouchEvent(cancel); }
+                        finally { bypass.remove(); cancel.recycle(); }
+                        prepare(current);
+                        current.position = SeparateShadeSwipeMotion.resist(current.base - dx, current.width);
+                        current.velocity.addMovement(event);
+                        render(current);
+                        return true;
+                    }
                 }
             }
         }
@@ -330,6 +420,7 @@ final class SeparateShadeSwipeHooks {
             if (state != current) return true;
             try {
                 if (!eligible(current.panel) || current.root.getWidth() != (int) current.width
+                        || current.root.getHeight() != (int) current.height
                         || panelFraction.getFloat(current.panel) < .999f || centerFraction.getFloat(current.center) < .999f) finishSafely(current, current.sourceCenter);
                 else render(current);
             } catch (ReflectiveOperationException | RuntimeException error) {
@@ -347,9 +438,17 @@ final class SeparateShadeSwipeHooks {
     }
 
     private void render(State current) throws ReflectiveOperationException {
-        float fraction = SeparateShadeSwipeMotion.fraction(current.position, current.width);
-        for (Foreground item : current.notificationViews) item.move(-current.position);
-        for (Foreground item : current.centerViews) item.move(current.width - current.position);
+        float position = current.vertical
+                ? Math.max(0f, Math.min(current.height, current.position)) : current.position;
+        float fraction = current.vertical
+                ? SeparateShadeSwipeMotion.fraction(position, current.height) : current.fraction();
+        if (current.vertical) {
+            for (Foreground item : current.notificationViews) item.moveY(position);
+            for (Foreground item : current.centerViews) item.moveY(current.height - position);
+        } else {
+            for (Foreground item : current.notificationViews) item.move(-position);
+            for (Foreground item : current.centerViews) item.move(current.width - position);
+        }
         current.statusBar.apply(fraction);
         current.behind.setAlpha(current.behindAlpha * fraction);
         for (Foreground item : current.notificationBackgrounds) item.view.setAlpha(item.alpha * (1f - fraction));
@@ -360,7 +459,7 @@ final class SeparateShadeSwipeHooks {
     private void applySurface(State current) throws IllegalAccessException {
         SurfaceControl layer = (SurfaceControl) surface.get(current.panel);
         if (layer == null || !layer.isValid()) return;
-        float fraction = SeparateShadeSwipeMotion.fraction(current.position, current.width);
+        float fraction = current.fraction();
         // Preserve Flyme/the module's current color; only blend this native layer's opacity.
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
             float opacity = fraction;
@@ -370,7 +469,7 @@ final class SeparateShadeSwipeHooks {
 
     private void settle(State current, boolean toCenter, float velocity) {
         current.dragging = false;
-        float start = current.position, target = toCenter ? current.width : 0f;
+        float start = current.position, target = toCenter ? current.dimension() : 0f;
         ValueAnimator animator = ValueAnimator.ofFloat(0f, .6f);
         current.animator = animator; animator.setDuration(600L); animator.setInterpolator(new LinearInterpolator());
         animator.addUpdateListener(frame -> {
@@ -393,7 +492,7 @@ final class SeparateShadeSwipeHooks {
 
     private void finishSafely(State current, boolean toCenter) {
         if (state != current) return;
-        state = null; candidate = null;
+        state = null; candidate = null; secondPullCandidate = null;
         if (current.animator != null) current.animator.cancel();
         current.velocity.recycle();
         if (current.preDraw != null && current.root.getViewTreeObserver().isAlive()) current.root.getViewTreeObserver().removeOnPreDrawListener(current.preDraw);
@@ -467,31 +566,56 @@ final class SeparateShadeSwipeHooks {
         Method method = type.getDeclaredMethod(name, args); method.setAccessible(true); return method;
     }
     private record Candidate(View root, Object panel, boolean center, float x, float y, View pages) {}
+    private record SecondPullCandidate(View root, Object panel, Object center, float x, float y) {}
+    private record RegionDecision(long downTime, boolean center) {}
     private static final class Foreground {
-        final View view; final float alpha; float x, appliedX;
-        Foreground(View view) { this.view = view; x = appliedX = view.getTranslationX(); alpha = view.getAlpha(); }
+        final View view; final float alpha; float x, appliedX, y, appliedY;
+        Foreground(View view) {
+            this.view = view;
+            x = appliedX = view.getTranslationX();
+            y = appliedY = view.getTranslationY();
+            alpha = view.getAlpha();
+        }
         void move(float offset) {
             if (view.getTranslationX() != appliedX) x = view.getTranslationX();
             appliedX = x + offset; view.setTranslationX(appliedX);
         }
-        void restorePosition() { if (view.getTranslationX() == appliedX) view.setTranslationX(x); }
+        void moveY(float offset) {
+            if (view.getTranslationY() != appliedY) y = view.getTranslationY();
+            appliedY = y + offset; view.setTranslationY(appliedY);
+        }
+        void restorePosition() {
+            if (view.getTranslationX() == appliedX) view.setTranslationX(x);
+            if (view.getTranslationY() == appliedY) view.setTranslationY(y);
+        }
         void restore() { restorePosition(); view.setAlpha(alpha); }
     }
     private static final class State {
         SeparateShadeStatusBar statusBar;
         final View root, pages; final Object panel, center; final boolean sourceCenter;
-        final float width, minFling, maxFling;
+        final float width, height, minFling, maxFling;
         final VelocityTracker velocity = VelocityTracker.obtain();
         final List<Foreground> notificationViews = new ArrayList<>(), centerViews = new ArrayList<>(), notificationBackgrounds = new ArrayList<>();
-        View behind; float behindAlpha = 1f, downX, base, position; boolean dragging = true;
+        View behind; float behindAlpha = 1f, downX, downY, base, position; boolean dragging = true, vertical;
         ValueAnimator animator; ViewTreeObserver.OnPreDrawListener preDraw;
         State(Candidate candidate, Object center, ViewConfiguration configuration) {
             root = candidate.root; panel = candidate.panel; this.center = center; sourceCenter = candidate.center;
             pages = candidate.pages;
-            width = Math.max(1, root.getWidth()); downX = candidate.x;
+            width = Math.max(1, root.getWidth()); height = Math.max(1, root.getHeight()); downX = candidate.x;
             base = position = sourceCenter ? width : 0f;
             minFling = Math.max(configuration.getScaledMinimumFlingVelocity(), 600f * root.getResources().getDisplayMetrics().density);
             maxFling = configuration.getScaledMaximumFlingVelocity();
+        }
+        State(View root, Object panel, Object center, ViewConfiguration configuration) {
+            this.root = root; this.panel = panel; this.center = center; pages = null; sourceCenter = false;
+            width = Math.max(1, root.getWidth()); height = Math.max(1, root.getHeight());
+            base = position = 0f; vertical = true;
+            minFling = Math.max(configuration.getScaledMinimumFlingVelocity(), 600f * root.getResources().getDisplayMetrics().density);
+            maxFling = configuration.getScaledMaximumFlingVelocity();
+        }
+        float dimension() { return vertical ? height : width; }
+        float fraction() {
+            return SeparateShadeSwipeMotion.fraction(position, dimension());
         }
     }
 }

@@ -78,8 +78,16 @@ public final class ModuleSettings {
     public static final int GESTURE_BAR_WIDTH_DEFAULT = 100;
     public static int gestureBarWidth(int value) { return Math.max(80, Math.min(120, value)); }
     public static final String NOTIFICATION_CONTOUR = "coloros_notification_contour";
+    public static final String NOTIFICATION_APP_GROUPING = "notification_app_grouping_paging";
     public static final String QS_TRANSLATION_ORIGIN = "control_center_translation_origin_fix";
     public static final String SEPARATE_SHADE_SWIPE = "separate_shade_bidirectional_swipe";
+    public static final String SHADE_SECOND_PULL_CONTROL_CENTER = "shade_second_pull_control_center";
+    public static final String CONTROL_CENTER_PULL_REGION_ENABLED = "control_center_pull_region_enabled";
+    public static final String CONTROL_CENTER_PULL_REGION_START = "control_center_pull_region_start";
+    public static final int CONTROL_CENTER_PULL_REGION_START_DEFAULT = 50;
+    public static int controlCenterPullRegionStart(int value) {
+        return Math.round(Math.max(0, Math.min(100, value)) / 5f) * 5;
+    }
     public static final String ADD_PANEL_OPTIMIZE = "add_panel_optimize";
     public static final String ADD_PANEL_NAMES = "add_panel_names";
     public static final String SECONDARY_EXPANSION_FIX = "combined_secondary_expansion_fix";

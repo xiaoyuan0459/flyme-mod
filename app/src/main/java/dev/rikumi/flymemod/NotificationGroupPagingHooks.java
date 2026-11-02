@@ -124,7 +124,12 @@ final class NotificationGroupPagingHooks {
         if (gesture == null) return;
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) return;
-        if (gesture.row.get() != touched.get(helper)) { clear(helper); return; }
+        try {
+            if (gesture.row.get() != touched.get(helper)) { clear(helper); return; }
+        } catch (IllegalAccessException error) {
+            clear(helper);
+            return;
+        }
         if (action == MotionEvent.ACTION_MOVE) {
             float dx = event.getRawX() - gesture.x, dy = event.getRawY() - gesture.y;
             if (!gesture.active) {
@@ -148,7 +153,13 @@ final class NotificationGroupPagingHooks {
 
     private boolean blocksDismiss(Object helper) {
         Gesture gesture = gestures.get(helper);
-        return gesture != null && gesture.row.get() == touched.get(helper);
+        if (gesture == null) return false;
+        try {
+            return gesture.row.get() == touched.get(helper);
+        } catch (IllegalAccessException error) {
+            clear(helper);
+            return false;
+        }
     }
 
     private void clear(Object helper) {
@@ -197,8 +208,8 @@ final class NotificationGroupPagingHooks {
         while (!pending.isEmpty()) {
             ViewGroup current = pending.remove(pending.size() - 1);
             if (GROUP_CONTAINER.equals(current.getClass().getName())) {
-                ViewGroup parent = findPagingParent(current);
-                if (parent != null) return parent;
+                ViewGroup paging = findPagingParent(current);
+                if (paging != null) return paging;
             }
             for (int i = 0; i < current.getChildCount(); i++) {
                 View child = current.getChildAt(i);

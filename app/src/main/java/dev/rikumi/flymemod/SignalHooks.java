@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
-import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -16,19 +15,12 @@ import android.os.Looper;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.text.SpannableStringBuilder;
-import android.text.Spanned;
-import android.text.style.RelativeSizeSpan;
-import android.text.style.SubscriptSpan;
-import android.text.style.SuperscriptSpan;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -57,7 +49,6 @@ final class SignalHooks {
     private final ClassLoader loader;
     private final Installer installer;
     private final Consumer<Context> settings;
-    private final Consumer<TextView> statusBarFont;
     private final BooleanSupplier merge, network;
     private final BiConsumer<String, Throwable> log;
     private final Map<View, Mobile> mobiles = new WeakHashMap<>();
@@ -67,12 +58,11 @@ final class SignalHooks {
     private volatile boolean ratRefreshPending;
     private boolean wifiDefault;
 
-    SignalHooks(ClassLoader loader, Installer installer, Consumer<Context> settings, Consumer<TextView> statusBarFont,
+    SignalHooks(ClassLoader loader, Installer installer, Consumer<Context> settings,
                 BooleanSupplier merge, BooleanSupplier network, BiConsumer<String, Throwable> log) {
         this.loader = loader;
         this.installer = installer;
         this.settings = settings;
-        this.statusBarFont = statusBarFont;
         this.merge = merge;
         this.network = network;
         this.log = log;
@@ -206,20 +196,11 @@ final class SignalHooks {
         Mobile mobile = new Mobile(root, signal, type, inout, group);
         mobiles.put(root, mobile);
         if (network.getAsBoolean()) {
-            mobile.label = new TextView(root.getContext());
-            mobile.label.setGravity(Gravity.CENTER_VERTICAL);
-            int sizeId = root.getResources().getIdentifier("status_bar_clock_size", "dimen", "com.android.systemui");
-            mobile.label.setTextSize(TypedValue.COMPLEX_UNIT_PX, 0.86f * (sizeId != 0
-                    ? root.getResources().getDimension(sizeId) : 13 * root.getResources().getDisplayMetrics().density));
+            mobile.label = new NetworkTypeBadgeView(root.getContext());
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
             params.setMarginEnd(Math.round(2 * root.getResources().getDisplayMetrics().density));
-            statusBarFont.accept(mobile.label);
-            Typeface family = mobile.label.getTypeface();
-            mobile.label.setTypeface(Typeface.create(
-                    family == null ? Typeface.SANS_SERIF : family, Typeface.BOLD));
-            mobile.label.setLetterSpacing(0.01f);
-            mobile.label.setMaxLines(1);
-            group.addView(mobile.label, 0, params);
+            int typeIndex = group.indexOfChild(type);
+            group.addView(mobile.label, Math.max(0, typeIndex), params);
             type.setVisibility(View.GONE);
         }
         if (!receiverRegistered) {
@@ -297,8 +278,8 @@ final class SignalHooks {
             if (mobile.label == null) continue;
             Mobile source = primary == mobile ? data : (!mobile.secondary && mobile == data ? mobile : null);
             String label = source == null || wifiDefault ? "" : preferRat(source.rat);
-            if (!android.text.TextUtils.equals(mobile.label.getText().toString(), label)) {
-                mobile.label.setText(styledRat(label));
+            if (!android.text.TextUtils.equals(mobile.label.getLabel(), label)) {
+                mobile.label.setLabel(label);
             }
             mobile.label.setVisibility(label.isEmpty() ? View.GONE : View.VISIBLE);
             mobile.type.setVisibility(View.GONE);
@@ -340,7 +321,7 @@ final class SignalHooks {
     private static void updateTint(Mobile mobile) {
         if (mobile.label == null) return;
         ColorStateList tint = mobile.signal.getImageTintList();
-        if (tint != null) mobile.label.setTextColor(tint);
+        if (tint != null) mobile.label.setTintList(tint);
     }
 
     private static int activeDataSubscription() {
@@ -406,28 +387,6 @@ final class SignalHooks {
                 || "2".equals(radioNrCaState);
     }
 
-    private static CharSequence styledRat(String label) {
-        if (label == null || label.length() <= 2) return label;
-        String upper = label.toUpperCase(java.util.Locale.ROOT);
-        if (!upper.startsWith("5G") && !upper.startsWith("4G")) return upper;
-        SpannableStringBuilder text = new SpannableStringBuilder();
-        text.append(upper, 0, 2);
-        for (int i = 2; i < upper.length(); i++) {
-            char value = upper.charAt(i);
-            if (value == '-') continue;
-            int start = text.length();
-            text.append(value);
-            if (value == '+') {
-                text.setSpan(new RelativeSizeSpan(.58f), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                text.setSpan(new SuperscriptSpan(), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            } else if (value == 'A') {
-                text.setSpan(new RelativeSizeSpan(.62f), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                text.setSpan(new SubscriptSpan(), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
-        }
-        return text;
-    }
-
     private static int id(View view, String name) {
         return view.getResources().getIdentifier(name, "id", "com.android.systemui");
     }
@@ -439,7 +398,7 @@ final class SignalHooks {
         final ImageView signal, type, inout;
         final LinearLayout group;
         final int inoutMarginStart, inoutMarginTop, inoutGravity;
-        TextView label;
+        NetworkTypeBadgeView label;
         Mobile primary, mergedSecond;
         boolean secondary;
         String rat = "";

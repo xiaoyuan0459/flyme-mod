@@ -975,9 +975,7 @@ public final class XposedInit extends XposedModule {
         try {
             new SignalHooks(loader,
                     (name, method, hooker, parameters) -> install(loader, name, method, hooker, parameters),
-                    this::loadSettings, view -> {
-                        if (activeClockFontHooks != null) activeClockFontHooks.applyStatusBarFont(view);
-                    },
+                    this::loadSettings,
                     () -> mergeDualSignalEnabled, () -> separateNetworkTypeEnabled,
                     (message, error) -> log(Log.ERROR, "FlymeMod", message, error)).install();
         } catch (ReflectiveOperationException e) {
